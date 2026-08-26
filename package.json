@@ -45,7 +45,9 @@
   "files": ["dist", "skills", "docs"],
   "dependencies": {
     "@clack/prompts": "^1.1.0",
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@google/genai": "^2.19.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "dotenv": "^17.4.2",
     "playwright-core": "^1.50.0",
     "zod": "^4.3.6"
   },
