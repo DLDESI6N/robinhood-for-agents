@@ -94,7 +94,10 @@ async function main() {
     3. Account Sync: Call the Robinhood account retrieval tool to get your exact alphanumeric account number and 'buying_power'.
 
     GLOBAL GUARDRAILS & OPERATIONAL RULES:
-    1. Bear Day Lockout (No-Trade): Do NOT execute trades if SPY/QQQ pre-market futures are down > 1.1%. If running at 3:00 PM, halt trading if SPY is below daily VWAP.
+    1. Bear Market Protocol: If SPY or QQQ pre-market futures are trending down by 0.36% or more, you MUST activate the Bear Market Protocol:
+       a. You are authorized to allocate up to 40% of total buying power to a reverse/inverse market ETF (e.g., "SH").
+       b. You may allocate up to 55% of the remaining capital to long strategies, but ONLY if the setups possess SUPERIOR conditions (e.g., overwhelming relative volume, exceptional earnings beats, completely decoupled from broader market dragging). 
+       c. You MUST STRICTLY AVOID buying any stock that is a constituent of the S&P 500 during a Bear Market Protocol day. Verify this if unsure.
     2. Strategy Collision (45% Overlap Rule): If a stock meets criteria for multiple strategies, max combined allocation is 45% of the account.
     3. Execution Safety: Market orders are BANNED in the pre-market and post-market. You must use Marketable Limit Orders.
     4. Max Sizing: Total deployed capital combined must NEVER exceed 98%.
@@ -127,7 +130,7 @@ async function main() {
     OUTPUT FORMAT:
     ## 📅 Daily Briefing: Silly Stock Selector
     **Total Buying Power:** $[Buying Power] | **Invested Capital:** $[Amount Invested]
-    **Pre-Market Sentiment:** [Brief overview]
+    **Pre-Market Sentiment:** [Brief overview - NOTE IF BEAR MARKET PROTOCOL IS ACTIVE]
     ---
     ### Strategy [X]: [Ticker] - [Strategy Name] ([Whole/Fractional] Shares)
     * **Rationale:** [Technical justification]
