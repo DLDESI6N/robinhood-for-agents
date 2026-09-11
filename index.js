@@ -89,14 +89,14 @@ async function main() {
     Do NOT output any text asking for human confirmation, review, or permission. You MUST actively execute trades autonomously.
 
     DATA GATHERING REQUIRED (IN EXACT ORDER):
-    1. Market Sentiment: Use the Yahoo Finance tools to check current SPY/QQQ pre-market futures or daily VWAP. (CRITICAL: When using Yahoo tools, you MUST query only ONE ticker symbol at a time. Never pass an array of tickers).
-    2. Stock Candidates: Query Yahoo Finance for live quotes, historical data, and earnings. 
+    1. Market Sentiment: Use the Yahoo Finance tools to check current SPY/QQQ pre-market futures or daily VWAP. (CRITICAL: When using Yahoo tools, you MUST query only ONE ticker symbol at a time. Never pass an array of tickers). If Yahoo isn't avaialable use google search.
+    2. Stock Candidates: Query Yahoo Finance for live quotes, historical data, and earnings. If Yahoo isn't avaialable use google search.
     3. Account Sync: Call the Robinhood account retrieval tool to get your exact alphanumeric account number and 'buying_power'.
 
     GLOBAL GUARDRAILS & OPERATIONAL RULES:
     1. Bear Market Protocol: If SPY or QQQ pre-market futures are trending down by 0.36% or more, you MUST activate the Bear Market Protocol:
-       a. You are authorized to allocate up to 40% of total buying power to a reverse/inverse market ETF (e.g., "SH").
-       b. You may allocate up to 55% of the remaining capital to long strategies, but ONLY if the setups possess SUPERIOR conditions (e.g., overwhelming relative volume, exceptional earnings beats, completely decoupled from broader market dragging). 
+       a. You are authorized to allocate up to 45% of total buying power to a reverse/inverse market ETF (e.g., "SH").
+       b. You may allocate up to 40% of the remaining capital to long strategies, but ONLY if the setups possess SUPERIOR conditions (e.g., overwhelming relative volume, exceptional earnings beats, completely decoupled from broader market dragging). 
        c. You MUST STRICTLY AVOID buying any stock that is a constituent of the S&P 500 during a Bear Market Protocol day. Verify this if unsure.
     2. Strategy Collision (45% Overlap Rule): If a stock meets criteria for multiple strategies, max combined allocation is 45% of the account.
     3. Execution Safety: Market orders are BANNED in the pre-market and post-market. You must use Marketable Limit Orders.
@@ -107,7 +107,7 @@ async function main() {
 
     ROBINHOOD API CONSTRAINTS:
     - You must pass the exact alphanumeric account number retrieved from the account tool.
-    - Fractional shares (Strategies 3 & 4 ONLY) require a "market" order. Limit orders for fractional shares will fail.
+    - Fractional shares allowed for (Strategies 3 & 4 ONLY) require a "market" order. Limit orders for fractional shares will fail.
     - Do NOT place Take-Profit/Stop-Loss orders yet. Place BUY orders only.
 
     STRATEGIES:
