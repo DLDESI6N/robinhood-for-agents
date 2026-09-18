@@ -8,21 +8,57 @@ dotenv.config();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function saveDailyLog(content) {
+async function saveDailyLog(content, phaseName) {
   try {
-    const logsDir = "./logs";
+    const logsDir = "./reports"; 
     await fs.mkdir(logsDir, { recursive: true });
-    const dateStr = new Date().toISOString().split("T")[0];
-    const fileName = `${logsDir}/briefing-${dateStr}.md`;
     
-    await Bun.write(fileName, content); 
-    console.log(`\nDaily briefing successfully saved to: ${fileName}`);
+    const now = new Date();
+    const dateStr = now.toISOString().split("T")[0];
+    
+    // Grabbing local time just for the filename string
+    const timeStr = `${now.getHours()}-${now.getMinutes()}`;
+    const fileName = `${logsDir}/briefing-${phaseName}-${dateStr}_${timeStr}.md`;
+    
+    await fs.writeFile(fileName, content); 
+    console.log(`\nReport successfully saved to: ${fileName}`);
   } catch (error) {
     console.error("Failed to save daily log:", error);
   }
 }
 
+function getTradingPhase() {
+  // Force time evaluation in Eastern Time (America/New_York) to avoid UTC server drift
+  const now = new Date();
+  const etString = now.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false });
+  const [hoursStr, minutesStr] = etString.split(":");
+  const hours = parseInt(hoursStr, 10);
+  const minutes = parseInt(minutesStr, 10);
+
+  // Phase 1: ~7:40 AM ET (Cron should trigger at 7:40)
+  if (hours === 7 && minutes >= 30 && minutes <= 59) return "PHASE_1";
+  
+  // Phase 2: ~9:20 AM ET (Cron should trigger at 9:20)
+  if (hours === 9 && minutes >= 15 && minutes <= 45) return "PHASE_2";
+  
+  // Phase 3: ~10:15 AM ET (Cron should trigger at 10:15)
+  if (hours === 10 && minutes >= 10 && minutes <= 45) return "PHASE_3";
+  
+  // Ad-hoc Intraday Runs: 11:00 AM ET or later defaults to Phase 1 logic
+  if (hours >= 11) return "PHASE_1";
+  
+  return "UNKNOWN";
+}
+
 async function main() {
+  const phase = getTradingPhase();
+  
+  if (phase === "UNKNOWN") {
+    console.log("Current ET time does not match any trading phases (7:40, 9:20, 10:15). Exiting.");
+    process.exit(0);
+  }
+
+  console.log(`=== INITIATING ${phase} ===`);
   console.log("Connecting to MCP Servers (Robinhood & Yahoo Finance)...");
 
   const rhTransport = new StdioClientTransport({
@@ -45,19 +81,19 @@ async function main() {
   );
   await yfClient.connect(yfTransport);
 
-  console.log("Connected to both servers! Fetching tool registries...");
+  console.log("Connected to servers! Fetching tool registries...");
 
   const rhToolsList = await rhClient.listTools();
-  const allowedRhToolNames = ["get_account", "get_portfolio", "get_positions", "place_stock_order"];
+  
+  // Added get_open_orders, cancel_order, and a catch-all "order" to ensure order management tools are available
+  const allowedRhToolNames = ["get_account", "get_portfolio", "get_positions", "place_stock_order", "get_open_orders", "cancel_order", "order"];
   const filteredRhTools = rhToolsList.tools.filter(tool => 
     allowedRhToolNames.some(name => tool.name.includes(name))
   );
 
   const yfToolsList = await yfClient.listTools();
-  
   const allMcpTools = [...filteredRhTools, ...yfToolsList.tools];
-  console.log(`Loaded ${filteredRhTools.length} Robinhood tools and ${yfToolsList.tools.length} Yahoo tools.`);
-
+  
   const mcpGeminiTools = allMcpTools.map(tool => {
     const formattedProperties = {};
     if (tool.inputSchema?.properties) {
@@ -82,60 +118,93 @@ async function main() {
   const ai = new GoogleGenAI({});
   const modelName = "gemini-3.1-pro-preview"; 
 
-  const tradingSystemInstruction = `
-    You are the "Silly Stock Selector," an autonomous algorithmic trading assistant. You embody a highly disciplined, laser-focused stock day trader. Your core objective is to safely compound a 10% monthly return. Capital preservation is your highest priority.
-
-    CRITICAL EXECUTION RULE: 
-    Do NOT output any text asking for human confirmation, review, or permission. You MUST actively execute trades autonomously.
-
-    DATA GATHERING REQUIRED (IN EXACT ORDER):
-    1. Market Sentiment: Use the Yahoo Finance tools to check current SPY/QQQ pre-market futures or daily VWAP. (CRITICAL: When using Yahoo tools, you MUST query only ONE ticker symbol at a time. Never pass an array of tickers). If Yahoo isn't avaialable use google search.
-    2. Stock Candidates: Query Yahoo Finance for live quotes, historical data, and earnings. If Yahoo isn't avaialable use google search.
-    3. Account Sync: Call the Robinhood account retrieval tool to get your exact alphanumeric account number and 'buying_power'.
-
-    GLOBAL GUARDRAILS & OPERATIONAL RULES:
-    1. Bear Market Protocol: If SPY or QQQ pre-market futures are trending down by 0.36% or more, you MUST activate the Bear Market Protocol:
-       a. You are authorized to allocate up to 45% of total buying power to a reverse/inverse market ETF (e.g., "SH").
-       b. You may allocate up to 40% of the remaining capital to long strategies, but ONLY if the setups possess SUPERIOR conditions (e.g., overwhelming relative volume, exceptional earnings beats, completely decoupled from broader market dragging). 
-       c. You MUST STRICTLY AVOID buying any stock that is a constituent of the S&P 500 during a Bear Market Protocol day. Verify this if unsure.
-    2. Strategy Collision (45% Overlap Rule): If a stock meets criteria for multiple strategies, max combined allocation is 45% of the account.
-    3. Execution Safety: Market orders are BANNED in the pre-market and post-market. You must use Marketable Limit Orders.
-    4. Max Sizing: Total deployed capital combined must NEVER exceed 98%.
-    5. Max Spread Limit (Illiquidity Guard): You MUST calculate the distance between the Bid and Ask prices. If the Bid-Ask spread is greater than $0.15 (or 0.25% of the asset's price), ABORT the trade for that ticker entirely. Do not buy illiquid assets.
-    6. Price Sanity Check: Your calculated limit price (Ask + $0.05) must NEVER exceed the 'regularMarketPrice' or 'postMarketPrice' by more than 0.5%.
-    7. Yahoo Tool Glitch Fallback: If a Yahoo Finance tool returns an error, fails to execute, or cannot pull historical 'back check' data, completely IGNORE Yahoo for that specific data point and immediately use the googleSearch tool instead to find the information.
-
-    ROBINHOOD API CONSTRAINTS:
-    - You must pass the exact alphanumeric account number retrieved from the account tool.
-    - Fractional shares allowed for (Strategies 3 & 4 ONLY) require a "market" order. Limit orders for fractional shares will fail.
-    - Do NOT place Take-Profit/Stop-Loss orders yet. Place BUY orders only.
-
-    STRATEGIES:
-    Strategy 1: Tech & Small-Cap Surge (Whole Shares ONLY)
-    - Triggers: Tech sector ($300M - $10B cap), 1-mo momentum > +10%, intraday RSI > 55, RVOL > 2.0x, higher lows.
-    - Exit: 50% at +4.0%. Stop-Loss: -2.5% trailing on remainder. Liquidate by 10:30 AM.
-
-    Strategy 2: The Earnings Catalyst (Whole Shares ONLY)
-    - Triggers: BMO or AMC yesterday, beat revenue, raised guidance, RVOL > 2.0x.
-    - Exit: Limit at Avg Historical Positive Move x 0.75. Stop-Loss: -3.0%. Liquidate by 10:15 AM.
-
-    Strategy 3: General News Breakout (Fractional ALLOWED)
-    - Triggers: Verifiable news within 24hrs, 1-mo > +5%, RVOL > 1.5x, spread < 0.25%.
-    - Exit: Limit at +5.0%. Stop-Loss: -2.5%. Liquidate by 10:30 AM.
-
-    Strategy 4: Intraday VWAP Continuation (Fractional ALLOWED)
-    - Triggers: > 1M avg volume, above 20/50 SMA. Pulls back to VWAP on low vol, RSI ~50.
-    - Exit: Limit at +3.0%. Stop-Loss: -1.5% below VWAP. Liquidate by 11:00 AM.
-
-    OUTPUT FORMAT:
-    ## 📅 Daily Briefing: Silly Stock Selector
-    **Total Buying Power:** $[Buying Power] | **Invested Capital:** $[Amount Invested]
-    **Pre-Market Sentiment:** [Brief overview - NOTE IF BEAR MARKET PROTOCOL IS ACTIVE]
-    ---
-    ### Strategy [X]: [Ticker] - [Strategy Name] ([Whole/Fractional] Shares)
-    * **Rationale:** [Technical justification]
-    * **Entry:** [Market/Limit] Order ([X] shares)
+  // Base rules that apply to all phases
+  const baseRules = `
+    You are the "Silly Stock Selector," an autonomous algorithmic trading assistant.
+    CRITICAL RULE: NEVER use Market orders. You MUST ONLY use LIMIT orders that are precise to the current live price to prevent slippage.
+    CRITICAL RULE: Do NOT ask for human confirmation. Execute autonomously.
+    DATA GATHERING: Use Yahoo tools (one ticker at a time) or googleSearch as fallback. Get Robinhood account ID before trading.
   `;
+
+  let systemInstruction = "";
+  let initialPrompt = "";
+
+  // Assign phase-specific logic
+  if (phase === "PHASE_1") {
+    // Re-evaluate ET hours just for the prompt context
+    const etString = new Date().toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false });
+    const isLateRun = parseInt(etString.split(":")[0], 10) >= 11;
+    
+    const timeContext = isLateRun 
+      ? "CURRENT TIME PHASE: Intraday/Late Run (11:00 AM+ ET). OBJECTIVE: Find intraday setups, calculate allocations, and execute BUY Limit orders."
+      : "CURRENT TIME PHASE: 7:40 AM ET - Daily Setup. OBJECTIVE: Find pre-market setups, calculate allocations, and execute BUY Limit orders.";
+
+    systemInstruction = baseRules + `
+      ${timeContext}
+      
+      RULES:
+      1. Market Sentiment: Check SPY/QQQ. If down >0.36%, trigger Bear Market Protocol (max 45% in inverse ETF like SH, strict long setups only).
+      2. Max Sizing: Total deployed capital never exceeds 98%.
+      3. Max Spread: If Bid-Ask spread > $0.15 or 0.25% of price, ABORT trade.
+      4. Limit Price Calculation: Ask + $0.05, but NEVER exceed market price by more than 0.5%.
+      5. Fractional Shares: List any fractionals the user should buy manually in the report, do NOT execute them via API.
+      6. EXTENDED HOURS EXECUTION: If trading before 9:30 AM ET, you MUST explicitly include the parameter to execute during extended hours (e.g. extended_hours: true) so the order fills immediately instead of queuing for open.
+
+      OUTPUT REPORT FORMAT:
+      ## 📅 Setup Plan (Phase 1)
+      **Buying Power:** $X | **Invested:** $X
+      **Sentiment:** [Overview]
+      ### Strategy Executed: [Ticker]
+      * **Entry:** [Limit price and share count]
+      ### Manual Fractional Shares Required:
+      * [List any fractional share setups the user needs to buy manually]
+    `;
+    
+    initialPrompt = isLateRun 
+      ? "Begin intraday market analysis. Analyze market, find setups, calculate limits, execute BUY limit orders, and output the report."
+      : "Begin 7:40 AM daily market analysis. Analyze market, find stocks, calculate limits, execute BUY limit orders, and output the report.";
+  
+  } else if (phase === "PHASE_2") {
+    systemInstruction = baseRules + `
+      CURRENT TIME PHASE: 9:20 AM ET - Position Assessment.
+      OBJECTIVE: Retrieve current positions, evaluate P&L, and execute exit Limit orders if thresholds are met.
+      
+      RULES:
+      1. Call get_positions to view currently held stocks and their average buy price.
+      2. Check live prices using Yahoo Finance or googleSearch.
+      3. CRITICAL EVALUATION & CANCELLATION:
+         - If a position is at a 1.5% LOSS or worse: Execute a Sell Limit order immediately to stop the loss.
+         - If a position is at a 2.5% GAIN or better: Execute a Sell Limit order immediately to secure profit.
+         - LOCKED SHARES PREVENTION: Before placing ANY sell order, you MUST check if there is an existing open order for that ticker. If an open order exists, you MUST cancel it first. You cannot place a new sell order if shares are locked in an existing bracket.
+         - If a position is between -1.49% and +2.49%, do nothing and hold.
+      
+      OUTPUT REPORT FORMAT:
+      ## 📅 9:20 AM Assessment Report
+      * List positions held.
+      * Note which were sold (loss cut / profit taken) and the limit prices used. Mention if you had to cancel an open order first.
+      * Note which are being held.
+    `;
+    initialPrompt = "Begin 9:20 AM assessment. Pull my current positions, check their live prices. If any position is down 1.5%+ or up 2.5%+, cancel any existing open orders for it and execute a new limit sell order.";
+  
+  } else if (phase === "PHASE_3") {
+    systemInstruction = baseRules + `
+      CURRENT TIME PHASE: 10:15 AM ET - Daily Liquidation.
+      OBJECTIVE: Close out the day's trades to mitigate overnight risk.
+      
+      RULES:
+      1. Call get_positions to view currently held stocks.
+      2. Check live prices for each held ticker.
+      3. LOCKED SHARES PREVENTION: Before placing ANY sell order, you MUST check for and CANCEL any existing open sell orders for that ticker.
+      4. LIQUIDATION: You MUST Sell all positions using precise limit orders, UNLESS the current live price is within 0.5% of the original average purchase price.
+      5. If the price has not moved more than 0.5% in either direction, DO NOT sell it (Hold). 
+      
+      OUTPUT REPORT FORMAT:
+      ## 📅 10:15 AM Liquidation Report
+      * List all positions liquidated and the limit prices used. Mention cancelled orders.
+      * List any positions retained because they were within the 0.5% flat zone.
+    `;
+    initialPrompt = "Begin 10:15 AM liquidation. Pull current positions, check live prices. Cancel any existing open orders for your positions, then sell them all via limit orders UNLESS they are within 0.5% of the original purchase price.";
+  }
 
   let chat = ai.chats.create({
     model: modelName,
@@ -145,21 +214,59 @@ async function main() {
         { googleSearch: {} } 
       ],
       toolConfig: { includeServerSideToolInvocations: true },
-      systemInstruction: tradingSystemInstruction,
+      systemInstruction: systemInstruction,
       temperature: 0.1 
     }
   });
 
-  console.log(`Analyzing market conditions and executing strategies...`);
-  
-  let response = await chat.sendMessage({ 
-    message: "Begin daily market analysis. Use Yahoo Finance for quotes/data and Google Search as a backup. Calculate allocations, and execute BUY trades via Robinhood." 
-  });
+  console.log(`Executing AI chat loop for ${phase}...`);
+  let response = await chat.sendMessage({ message: initialPrompt });
 
-  while (response.functionCalls && response.functionCalls.length > 0) {
+  // Core Tool Execution Loop
+  response = await processAiLoop(chat, response, filteredRhTools, yfToolsList, rhClient, yfClient);
+
+  let finalLogContent = response.text;
+
+  // Phase 1 has a unique two-step process: Buy -> Wait 10 mins -> Set Sell Limits
+  if (phase === "PHASE_1" && !response.text.includes("NO TRADE")) {
+    console.log("\n--------------------------------------------------");
+    console.log("Phase 1 buys placed. Waiting 10 minutes (600,000ms) to stage bracket limits...");
+    console.log("--------------------------------------------------");
+
+    // Wait exactly 10 minutes before placing the bracket sell limits
+    await sleep(600000); 
+
+    console.log("Resuming: Staging exit bracket limit orders...");
+    
+    let followUpResponse = await chat.sendMessage({
+      message: "10 minutes have passed. Check filled shares via get_positions, check current prices, and place Take-Profit Limit sell orders at approximately a +2% gain (or a safe AI-determined gain based on current resistance). Remember to use extended hours if it is still before 9:30 AM ET."
+    });
+
+    followUpResponse = await processAiLoop(chat, followUpResponse, filteredRhTools, yfToolsList, rhClient, yfClient);
+    
+    finalLogContent += "\n\n### Phase 1 (Part B): Limit Exits Staged\n" + followUpResponse.text;
+    console.log(followUpResponse.text);
+  } else {
+    console.log("\n--------------------------------------------------");
+    console.log(response.text);
+    console.log("--------------------------------------------------");
+  }
+
+  await saveDailyLog(finalLogContent, phase);
+
+  await rhClient.close();
+  await yfClient.close();
+  console.log(`=== ${phase} COMPLETE ===`);
+}
+
+// Helper function to handle the function calling recursion loop
+async function processAiLoop(chat, response, filteredRhTools, yfToolsList, rhClient, yfClient) {
+  let currentResponse = response;
+  
+  while (currentResponse.functionCalls && currentResponse.functionCalls.length > 0) {
     let toolResponses = [];
 
-    for (const call of response.functionCalls) {
+    for (const call of currentResponse.functionCalls) {
       console.log(`\nExecuting tool: ${call.name} with arguments:`, JSON.stringify(call.args));
       
       let toolResult;
@@ -175,7 +282,6 @@ async function main() {
         }
 
         if (toolExecuted) {
-          console.log(`Tool Response:`, JSON.stringify(toolResult, null, 2));
           toolResponses.push({
             functionResponse: {
               name: call.name,
@@ -185,12 +291,11 @@ async function main() {
         }
       } catch (error) {
         console.error(`\n[!] Error executing ${call.name}:`, error.message);
-        // Pivot Instruction injected directly into the chat history
         toolResponses.push({
           functionResponse: {
             name: call.name,
             response: { 
-              error: `Tool execution failed: ${error.message}. If this is a Yahoo Finance tool issue or it lacks historical data, ABANDON this tool immediately and use googleSearch to find the data instead.` 
+              error: `Tool failed: ${error.message}. Use googleSearch if Yahoo failed to find current/historical data.` 
             }
           }
         });
@@ -198,72 +303,12 @@ async function main() {
     }
 
     if (toolResponses.length > 0) {
-      response = await chat.sendMessage({ message: toolResponses });
+      currentResponse = await chat.sendMessage({ message: toolResponses });
     } else {
-      response = await chat.sendMessage({ message: "Continue." });
+      currentResponse = await chat.sendMessage({ message: "Continue." });
     }
   }
-
-  let finalLogContent = response.text;
-
-  if (!response.text.includes("NO TRADE")) {
-    console.log("\n--------------------------------------------------");
-    console.log("Buy orders placed. Pausing for market execution...");
-    console.log("--------------------------------------------------");
-
-    await sleep(400000); 
-
-    console.log("Resuming: Staging exit bracket orders...");
-    
-    let followUpResponse = await chat.sendMessage({
-      message: "Check filled shares via get_positions, and immediately place corresponding Take-Profit and Stop-Loss sell orders."
-    });
-
-    while (followUpResponse.functionCalls && followUpResponse.functionCalls.length > 0) {
-      let followUpToolResponses = [];
-      
-      for (const call of followUpResponse.functionCalls) {
-        console.log(`\nExecuting tool: ${call.name} with arguments:`, JSON.stringify(call.args));
-        
-        let toolResult;
-        try {
-          if (filteredRhTools.some(t => t.name === call.name)) {
-            toolResult = await rhClient.callTool({ name: call.name, arguments: call.args });
-            console.log(`Tool Response:`, JSON.stringify(toolResult, null, 2));
-            followUpToolResponses.push({
-              functionResponse: { name: call.name, response: { result: toolResult } }
-            });
-          }
-        } catch (error) {
-          console.error(`\n[!] Error executing ${call.name}:`, error.message);
-          followUpToolResponses.push({
-            functionResponse: { name: call.name, response: { error: error.message } }
-          });
-        }
-      }
-
-      if (followUpToolResponses.length > 0) {
-         followUpResponse = await chat.sendMessage({ message: followUpToolResponses });
-      } else {
-         followUpResponse = await chat.sendMessage({ message: "Continue." });
-      }
-    }
-    
-    finalLogContent += "\n\n### Phase 2: Exit Brackets Executed\n" + followUpResponse.text;
-    
-    console.log("\n--------------------------------------------------");
-    console.log(followUpResponse.text);
-    console.log("--------------------------------------------------");
-  } else {
-    console.log("\n--------------------------------------------------");
-    console.log(response.text);
-    console.log("--------------------------------------------------");
-  }
-
-  await saveDailyLog(finalLogContent);
-
-  await rhClient.close();
-  await yfClient.close();
+  return currentResponse;
 }
 
 function mapTypeToGemini(jsonType) {
